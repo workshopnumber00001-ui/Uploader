@@ -28,7 +28,7 @@ class Database:
         self.db: Optional[MongoDatabase] = None
         self.users: Optional[Collection] = None
         self.settings: Optional[Collection] = None
-        self.subject_groups: Optional[Collection] = None  # NEW
+        self.subject_groups: Optional[Collection] = None
         
         self._connect_with_retry(max_retries, retry_delay)
         
@@ -56,7 +56,7 @@ class Database:
                 self.db = self.client.get_database('ugdev_db')
                 self.users = self.db['users']
                 self.settings = self.db['user_settings']
-                self.subject_groups = self.db['subject_groups']  # NEW
+                self.subject_groups = self.db['subject_groups']
                 
                 print(f"{Fore.GREEN}✓ MongoDB Connected Successfully!{Style.RESET_ALL}")
                 self._initialize_database()
@@ -83,13 +83,9 @@ class Database:
         print(f"{Fore.YELLOW}⌛ Setting up database...{Style.RESET_ALL}")
         
         try:
-            # Create indexes with error handling
             self._create_indexes()
             print(f"{Fore.GREEN}✓ Database indexes created!{Style.RESET_ALL}")
-            
-            # Run migrations
             self._migrate_existing_users()
-            
             print(f"{Fore.GREEN}✓ Database initialization complete!{Style.RESET_ALL}\n")
         except Exception as e:
             print(f"{Fore.RED}⚠ Database initialization error: {str(e)}{Style.RESET_ALL}")
@@ -100,7 +96,6 @@ class Database:
         index_results = []
         
         try:
-            # Compound index for users collection
             self.users.create_index(
                 [("bot_username", 1), ("user_id", 1)], 
                 unique=True,
@@ -111,7 +106,6 @@ class Database:
             print(f"{Fore.YELLOW}⚠ Could not create users compound index: {str(e)}{Style.RESET_ALL}")
 
         try:
-            # Single field index for settings
             self.settings.create_index(
                 [("user_id", 1)],
                 unique=True,
@@ -122,17 +116,15 @@ class Database:
             print(f"{Fore.YELLOW}⚠ Could not create settings index: {str(e)}{Style.RESET_ALL}")
 
         try:
-            # TTL index for expiry dates
             self.users.create_index(
                 "expiry_date",
                 name="user_expiry",
-                expireAfterSeconds=0  # Documents will be deleted at expiry_date
+                expireAfterSeconds=0
             )
             index_results.append("expiry TTL index")
         except Exception as e:
             print(f"{Fore.YELLOW}⚠ Could not create expiry index: {str(e)}{Style.RESET_ALL}")
             
-        # NEW: Index for subject_groups
         try:
             self.subject_groups.create_index(
                 [("user_id", 1), ("bot_username", 1)],
@@ -142,6 +134,17 @@ class Database:
             index_results.append("subject groups index")
         except Exception as e:
             print(f"{Fore.YELLOW}⚠ Could not create subject groups index: {str(e)}{Style.RESET_ALL}")
+
+        # NEW: Index for scheduled_uploads collection (it will be created on first insert, but let's ensure)
+        try:
+            scheduled_collection = self.db['scheduled_uploads']
+            scheduled_collection.create_index(
+                [("bot_username", 1), ("status", 1), ("scheduled_time", 1)],
+                name="scheduled_tasks_index"
+            )
+            index_results.append("scheduled uploads index")
+        except Exception as e:
+            print(f"{Fore.YELLOW}⚠ Could not create scheduled uploads index: {str(e)}{Style.RESET_ALL}")
             
         return index_results
 
@@ -152,23 +155,13 @@ class Database:
                 {"bot_username": {"$exists": False}},
                 {"$set": {"bot_username": "ugdevbot"}}
             )
-            
             if update_result.modified_count > 0:
                 print(f"{Fore.YELLOW}⚠ Migrated {update_result.modified_count} users to new schema{Style.RESET_ALL}")
         except Exception as e:
             print(f"{Fore.RED}⚠ Could not migrate users: {str(e)}{Style.RESET_ALL}")
 
     def get_user(self, user_id: int, bot_username: str = "ugdevbot") -> Optional[dict]:
-        """
-        Retrieve a user document
-        
-        Args:
-            user_id: Telegram user ID
-            bot_username: Bot username (default: "ugdevbot")
-            
-        Returns:
-            User document or None if not found
-        """
+        """Retrieve a user document"""
         try:
             return self.users.find_one({
                 "user_id": user_id,
@@ -179,22 +172,11 @@ class Database:
             return None
 
     def is_user_authorized(self, user_id: int, bot_username: str = "ugdevbot") -> bool:
-        """
-        Check if user is authorized (admin or has valid subscription)
-        
-        Args:
-            user_id: Telegram user ID
-            bot_username: Bot username
-            
-        Returns:
-            True if authorized, False otherwise
-        """
+        """Check if user is authorized (admin or has valid subscription)"""
         try:
-            # First check if user is admin/owner
             if user_id == OWNER_ID or user_id in ADMINS:
                 return True
                 
-            # Then check subscription status
             user = self.get_user(user_id, bot_username)
             if not user:
                 return False
@@ -203,7 +185,6 @@ class Database:
             if not expiry:
                 return False
                 
-            # Handle string expiry dates (backward compatibility)
             if isinstance(expiry, str):
                 expiry = datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S")
                 
@@ -215,18 +196,7 @@ class Database:
 
     def add_user(self, user_id: int, name: str, days: int, 
                 bot_username: str = "ugdevbot") -> tuple[bool, Optional[datetime]]:
-        """
-        Add or update a user in the database
-        
-        Args:
-            user_id: Telegram user ID
-            name: User's display name
-            days: Subscription duration in days
-            bot_username: Bot username
-            
-        Returns:
-            Tuple of (success, expiry_date)
-        """
+        """Add or update a user in the database"""
         try:
             expiry_date = datetime.now() + timedelta(days=days)
             update_result = self.users.update_one(
@@ -249,16 +219,7 @@ class Database:
             return False, None
 
     def remove_user(self, user_id: int, bot_username: str = "ugdevbot") -> bool:
-        """
-        Remove a user from the database
-        
-        Args:
-            user_id: Telegram user ID
-            bot_username: Bot username
-            
-        Returns:
-            True if user was deleted, False otherwise
-        """
+        """Remove a user from the database"""
         try:
             result = self.users.delete_one({
                 "user_id": user_id,
@@ -270,15 +231,7 @@ class Database:
             return False
 
     def list_users(self, bot_username: str = "ugdevbot") -> List[dict]:
-        """
-        List all users for a specific bot
-        
-        Args:
-            bot_username: Bot username to filter by
-            
-        Returns:
-            List of user documents
-        """
+        """List all users for a specific bot"""
         try:
             return list(self.users.find(
                 {"bot_username": bot_username},
@@ -289,22 +242,26 @@ class Database:
             return []
 
     def is_admin(self, user_id: int) -> bool:
-        """
-        Check if user is admin or owner
-        
-        Args:
-            user_id: Telegram user ID
-            
-        Returns:
-            True if admin/owner, False otherwise
-        """
+        """Check if user is admin or owner"""
         try:
-            is_admin = user_id == OWNER_ID or user_id in ADMINS
-            if is_admin:
-                print(f"{Fore.GREEN}✓ Admin/Owner {user_id} verified{Style.RESET_ALL}")
-            return is_admin
+            return user_id == OWNER_ID or user_id in ADMINS
         except Exception as e:
             print(f"{Fore.RED}Admin check error: {str(e)}{Style.RESET_ALL}")
+            return False
+
+    def is_channel_authorized(self, channel_id: int, bot_username: str = "ugdevbot") -> bool:
+        """Check if a channel is authorized to use the bot"""
+        try:
+            # Option 1: Allow all channels (comment out if you want strict control)
+            return True
+            # Option 2: Check in a separate collection (uncomment below)
+            # doc = self.db.channel_auth.find_one({
+            #     "channel_id": channel_id,
+            #     "bot_username": bot_username
+            # })
+            # return doc is not None
+        except Exception as e:
+            print(f"{Fore.RED}Channel auth error: {e}{Style.RESET_ALL}")
             return False
 
     def get_log_channel(self, bot_username: str):
@@ -332,12 +289,7 @@ class Database:
             return False
             
     def list_bot_usernames(self) -> List[str]:
-        """
-        Get distinct bot usernames from users collection
-        
-        Returns:
-            List of bot usernames
-        """
+        """Get distinct bot usernames from users collection"""
         try:
             usernames = self.users.distinct("bot_username")
             return usernames if usernames else ["ugdevbot"]
@@ -346,15 +298,7 @@ class Database:
             return ["ugdevbot"]
 
     async def cleanup_expired_users(self, bot) -> int:
-        """
-        Clean up expired users and notify them
-        
-        Args:
-            bot: Telegram bot instance
-            
-        Returns:
-            Number of users removed
-        """
+        """Clean up expired users and notify them"""
         try:
             current_time = datetime.now()
             expired_users = self.users.find({
@@ -365,7 +309,6 @@ class Database:
             removed_count = 0
             for user in expired_users:
                 try:
-                    # Notify user
                     await bot.send_message(
                         user["user_id"],
                         f"**⚠️ Your subscription has expired!**\n\n"
@@ -374,11 +317,9 @@ class Database:
                         f"Contact admin to renew your subscription."
                     )
                     
-                    # Remove user
                     self.users.delete_one({"_id": user["_id"]})
                     removed_count += 1
 
-                    # Log to admins
                     log_msg = (
                         f"**🚫 Removed Expired User**\n\n"
                         f"• Name: {user['name']}\n"
@@ -402,16 +343,7 @@ class Database:
             return 0
 
     def get_user_expiry_info(self, user_id: int, bot_username: str = "ugdevbot") -> Optional[dict]:
-        """
-        Get user's subscription expiry information
-        
-        Args:
-            user_id: Telegram user ID
-            bot_username: Bot username
-            
-        Returns:
-            Dictionary with expiry info or None if not found
-        """
+        """Get user's subscription expiry information"""
         try:
             user = self.get_user(user_id, bot_username)
             if not user:
@@ -438,20 +370,6 @@ class Database:
         except Exception as e:
             print(f"{Fore.RED}Get expiry info error for {user_id}: {str(e)}{Style.RESET_ALL}")
             return None
-
-    def close(self):
-        """Close MongoDB connection"""
-        if self.client:
-            self.client.close()
-            print(f"{Fore.YELLOW}✓ MongoDB connection closed{Style.RESET_ALL}")
-
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - close connection"""
-        self.close()
 
     # ==================== SETTINGS SYSTEM ====================
     def get_user_settings(self, user_id: int, bot_username: str) -> dict:
@@ -558,9 +476,87 @@ class Database:
         for subject, chat_id in groups.items():
             if subject.lower() in title.lower():
                 return chat_id
-        # If no match, return default group if set
         default = self.get_default_group(user_id, bot_username)
         return default
+
+    # ==================== SCHEDULED UPLOADS (NEW) ====================
+    def add_scheduled_task(self, user_id: int, bot_username: str, file_content: str,
+                           file_name: str, scheduled_time: datetime,
+                           channel_id: int, settings: dict) -> Optional[str]:
+        """Schedule a new upload task in MongoDB"""
+        try:
+            task_data = {
+                "user_id": user_id,
+                "bot_username": bot_username,
+                "file_content": file_content,
+                "file_name": file_name,
+                "scheduled_time": scheduled_time,
+                "channel_id": channel_id,
+                "settings": settings,
+                "status": "pending",  # pending, processing, done, failed
+                "created_at": datetime.now(),
+                "attempts": 0
+            }
+            result = self.db.scheduled_uploads.insert_one(task_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            print(f"Error scheduling task: {e}")
+            return None
+
+    def get_due_tasks(self, bot_username: str) -> List[dict]:
+        """Get all pending tasks that are due (scheduled_time <= now)"""
+        try:
+            now = datetime.now()
+            tasks = list(self.db.scheduled_uploads.find({
+                "bot_username": bot_username,
+                "status": "pending",
+                "scheduled_time": {"$lte": now}
+            }))
+            return tasks
+        except Exception as e:
+            print(f"Error fetching due tasks: {e}")
+            return []
+
+    def update_task_status(self, task_id: str, status: str, error_msg: str = ""):
+        """Update task status (processing/done/failed) and increment attempts"""
+        try:
+            update_data = {"status": status}
+            if error_msg:
+                update_data["error"] = error_msg
+            self.db.scheduled_uploads.update_one(
+                {"_id": task_id},
+                {"$set": update_data, "$inc": {"attempts": 1}}
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating task: {e}")
+            return False
+
+    def delete_done_tasks(self, bot_username: str, older_than_days: int = 7):
+        """Cleanup old completed/failed tasks (optional)"""
+        try:
+            cutoff = datetime.now() - timedelta(days=older_than_days)
+            self.db.scheduled_uploads.delete_many({
+                "bot_username": bot_username,
+                "status": {"$in": ["done", "failed"]},
+                "created_at": {"$lt": cutoff}
+            })
+        except Exception as e:
+            print(f"Error cleaning tasks: {e}")
+
+    def close(self):
+        """Close MongoDB connection"""
+        if self.client:
+            self.client.close()
+            print(f"{Fore.YELLOW}✓ MongoDB connection closed{Style.RESET_ALL}")
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - close connection"""
+        self.close()
 
 # 🔰 Startup Message
 print(f"\n{Fore.CYAN}{'='*50}")
